@@ -127,7 +127,7 @@ def ingest_article(url):
     # Ingest if not cached
     try:
         cmd = INGEST_COMMAND + [url]
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd(), timeout=30)
         if result.returncode == 0:
             print(f"Successfully ingested {url}")
             # Parse output_path from stdout
