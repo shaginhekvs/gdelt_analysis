@@ -62,7 +62,7 @@ def index():
         </style>
     </head>
     <body>
-        <h1>GDELT Analysis Dashboard</h1>
+        <h1>EQUITY Analysis Dashboard</h1>
 
         <h2>Subscribe to Alerts</h2>
         <form action="/subscribe" method="post" style="margin-bottom: 30px;">
