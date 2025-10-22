@@ -90,7 +90,12 @@ def index():
             <input type="submit" value="Unsubscribe">
         </form>
 
-        <h2>Top OpenRouter Responses</h2>
+        <h2>📢 Stock Impact Analysis & Recommendations</h2>
+        <p style="color: #666; font-size: 14px; margin-bottom: 20px;">
+            AI-powered analysis of recent news articles showing potential stock market impacts.
+            Higher likelihood scores (7-10) indicate stronger market reactions.
+            Click "View Full" to see detailed reasoning and evidence.
+        </p>
         {% for analysis in top_analyses %}
         <div class="analysis">
             <strong>{{ analysis.timestamp }}</strong>
@@ -98,7 +103,11 @@ def index():
             {{ analysis.content }}
         </div>
         {% endfor %}
-        <h2>Latest GDELT Data (Preview)</h2>
+        <h2>🌍 Global News Source - Top Data</h2>
+        <p style="color: #666; font-size: 14px; margin-bottom: 20px;">
+            Raw news data collected from global sources, analyzed for market insights.
+            Click "View Full" to explore the complete dataset of recent articles.
+        </p>
         {% for gdelt in last_gdelt %}
         <div class="txt">
             <strong>{{ gdelt.title }}</strong>
@@ -106,6 +115,26 @@ def index():
             {{ gdelt.content }}
         </div>
         {% endfor %}
+
+        <hr style="margin-top: 40px; border-color: #ddd;">
+        <footer style="text-align: center; color: #666; font-size: 12px; margin-top: 20px;">
+            <p>
+                &copy; 2025 Market Intelligence Analysis System. All rights reserved.
+            </p>
+            <p>
+                <strong>License:</strong> This software is provided for informational purposes only.
+                Not financial advice. Use at your own risk.
+            </p>
+            <p>
+                <strong>GDPR Compliance:</strong> We respect your privacy. Email subscriptions may be managed via the unsubscribe option above.
+                Personal data is processed solely for email alert delivery and is not shared with third parties.
+                For data removal requests, please contact the system administrator.
+            </p>
+            <p>
+                <strong>Disclaimer:</strong> Stock price predictions are based on AI analysis of news data and should not be considered
+                investment recommendations. Always conduct your own research and consult with qualified financial advisors.
+            </p>
+        </footer>
     </body>
     </html>
     """
