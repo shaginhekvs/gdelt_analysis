@@ -234,23 +234,50 @@ def clean_old_alerts():
     with open(alert_file, 'w') as f:
         json.dump(alerted, f)
 
-def process_analysis(analysis_text):
-    """Parse analysis JSON and send alerts for score 10"""
+def process_analysis(analysis_text, timestamp):
+    """Parse analysis JSON and send alerts based on subscriber thresholds"""
     try:
         analysis_data = json.loads(analysis_text)
         potential_impacts = analysis_data.get('potential_impacts', [])
-        for impact in potential_impacts:
-            ticker = impact.get('ticker')
-            company = impact.get('company')
-            likelihood = impact.get('likelihood')
-            reason = impact.get('reason')
-            if likelihood == 10:
-                alerted = get_alerted_stocks()
-                if ticker not in alerted:
-                    if send_alert_email(ticker, company, reason):
-                        save_alerted_stock(ticker)
+        current_time = time.time()
+
+        subscribers = get_subscribers()
+        for sub in subscribers:
+            # Check if enough time has passed since last send
+            time_since_last = current_time - sub['last_sent']
+            if time_since_last < sub['frequency'] * 3600:
+                continue
+
+            # Check if any impact meets threshold
+            for impact in potential_impacts:
+                if impact.get('likelihood', 0) >= sub['threshold']:
+                    if send_alert_email(sub['email'], analysis_text, timestamp):
+                        update_last_sent(sub['email'], current_time)
+                    break
+
     except json.JSONDecodeError:
         print("Failed to parse analysis as JSON")
+
+def update_last_sent(email, timestamp):
+    """Update last sent timestamp for subscriber"""
+    sub_file = os.path.join(DATA_DIR, "subscribers.json")
+    subscribers = get_subscribers()
+    for sub in subscribers:
+        if sub['email'] == email:
+            sub['last_sent'] = timestamp
+    with open(sub_file, 'w') as f:
+        json.dump(subscribers, f, indent=2)
+
+def get_subscribers():
+    """Get list of subscribers"""
+    sub_file = os.path.join(DATA_DIR, "subscribers.json")
+    if not os.path.exists(sub_file):
+        return []
+    try:
+        with open(sub_file, 'r') as f:
+            return json.load(f)
+    except:
+        return []
 
 def send_to_openrouter(feeds):
     """Send feeds to OpenRouter for analysis with two-step process."""
@@ -373,7 +400,8 @@ def send_to_openrouter(feeds):
                     f.write(analysis)
                 print(f"Saved analysis to {analysis_file}")
                 # Process analysis for alerts
-                process_analysis(analysis)
+                timestamp = datetime.fromtimestamp(int(time.time())).strftime('%Y-%m-%d %H:%M:%S')
+                process_analysis(analysis, timestamp)
             else:
                 print("No valid IDs found in response.")
         else:
@@ -412,7 +440,8 @@ def send_to_openrouter(feeds):
                 f.write(analysis)
             print(f"Saved analysis to {analysis_file}")
             # Process analysis for alerts
-            process_analysis(analysis)
+            timestamp = datetime.fromtimestamp(int(time.time())).strftime('%Y-%m-%d %H:%M:%S')
+            process_analysis(analysis, timestamp)
     except requests.RequestException as e:
         print(f"Error sending to OpenRouter: {e}")
         error_details = {"error": str(e)}
