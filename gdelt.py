@@ -500,7 +500,7 @@ async def main():
     """Main loop to run every minute."""
     while True:
         print(f"Querying GDELT at {datetime.now()}")
-        articles = await query_gdelt(last_minutes=15)  # Fetch last 15 minutes
+        articles = await query_gdelt(last_minutes=30)  # Fetch last 15 minutes
 
         if articles:
             print(f"Found {len(articles)} relevant articles.")
@@ -526,7 +526,7 @@ async def main():
         else:
             print("No relevant articles found.")
 
-        await asyncio.sleep(60)  # Wait for 1 minute
+        await asyncio.sleep(60 * 30)  # Wait for 30 minute
 
 if __name__ == "__main__":
     asyncio.run(main())
