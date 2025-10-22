@@ -8,7 +8,7 @@ import re
 import gzip
 import io
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterator, Dict, Optional, List
 
 # Configuration
@@ -21,9 +21,9 @@ INGEST_COMMAND = ["python", "-m", "synthetic_data_kit.cli", "ingest", "--output-
 def _minute_stamps(start_utc: datetime, end_utc: datetime) -> Iterator[str]:
     """Yield YYYYMMDDHHMMSS stamps (UTC) for each minute in [start, end]."""
     if start_utc.tzinfo is not None:
-        start_utc = start_utc.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        start_utc = start_utc.astimezone(timezone.utc).replace(tzinfo=None)
     if end_utc.tzinfo is not None:
-        end_utc = end_utc.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        end_utc = end_utc.astimezone(timezone.utc).replace(tzinfo=None)
     cur = start_utc.replace(second=0, microsecond=0)
     end_floor = end_utc.replace(second=0, microsecond=0)
     while cur <= end_floor:
@@ -63,7 +63,7 @@ def iter_gqg_minutes(start_utc: datetime, end_utc: datetime) -> Iterator[Dict]:
 
 async def query_gdelt(last_minutes=5):
     """Query GDELT GQG for articles in the last 5 minutes containing keywords."""
-    end_time = datetime.now(tz=datetime.timezone.utc)
+    end_time = datetime.now(tz=timezone.utc)
     start_time = end_time - timedelta(minutes=last_minutes)
 
     articles = []
