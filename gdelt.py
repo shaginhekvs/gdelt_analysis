@@ -16,7 +16,8 @@ BASE = "http://data.gdeltproject.org/gdeltv3/gqg/{stamp}.gqg.json.gz"
 KEYWORDS = ["trump", "china", "tariff", "LLM", "data center", "NVidia", "OpenAI"]
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DATA_DIR = os.getenv("DATA_DIR", "data_saved")
-INGEST_COMMAND = ["python", "-m", "synthetic_data_kit.cli", "ingest", "--output-dir", DATA_DIR]
+CACHE_DIR = os.path.join(DATA_DIR, "cache")
+INGEST_COMMAND = ["python", "-m", "synthetic_data_kit.cli", "ingest", "--output-dir", CACHE_DIR]
 
 def _minute_stamps(start_utc: datetime, end_utc: datetime) -> Iterator[str]:
     """Yield YYYYMMDDHHMMSS stamps (UTC) for each minute in [start, end]."""
@@ -31,10 +32,27 @@ def _minute_stamps(start_utc: datetime, end_utc: datetime) -> Iterator[str]:
         cur += timedelta(minutes=1)
 
 def _download_gz(url: str, timeout: int = 30, retries: int = 2, backoff: float = 1.5) -> Optional[bytes]:
-    """Download a gz file with light retries. Returns None on 404/absent minute."""
+    """Download a gz file with light retries, using cache if available. Returns None on 404/absent minute."""
+    # Extract stamp from URL
+    stamp = url.split('/')[-1].replace('.gqg.json.gz', '')
+    cache_path = os.path.join(CACHE_DIR, f"{stamp}.gqg.json.gz")
+    
+    # Check cache first
+    if os.path.exists(cache_path):
+        print(f"Loading from cache: {cache_path}")
+        with open(cache_path, 'rb') as f:
+            return f.read()
+    
+    # Download if not in cache
     for attempt in range(retries + 1):
         resp = requests.get(url, timeout=timeout)
+        print(f"Downloaded {url}: {resp.status_code}")
         if resp.status_code == 200:
+            # Save to cache
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(cache_path, 'wb') as f:
+                f.write(resp.content)
+            print(f"Saved to cache: {cache_path}")
             return resp.content
         if resp.status_code == 404:
             return None  # file not yet published / gap minute
@@ -67,9 +85,12 @@ async def query_gdelt(last_minutes=5):
     start_time = end_time - timedelta(minutes=last_minutes)
 
     articles = []
+    count = 0
     for record in iter_gqg_minutes(start_time, end_time):
+        count += 1
         # Filter for English
-        if record.get('lang') != 'eng':
+        if record.get('lang') != 'ENGLISH':
+            print(f"Discarded non-English article: lang={record.get('lang')}, title={record.get('title', '')[:50]}...")
             continue
         # Check for keywords in title or quotes
         title = record.get('title', '').lower()
@@ -83,12 +104,23 @@ async def query_gdelt(last_minutes=5):
                 'seendate': record.get('date', '').replace('-', '').replace(':', '').replace('T', '').replace('Z', '')[:14]  # Convert to YYYYMMDDHHMMSS
             }
             articles.append(article)
+    print(f"Processed {count} records from GQG API, found {len(articles)} matching articles.")
     return articles
 
 
 
 def ingest_article(url):
-    """Ingest article using synthetic-data-kit and return the full text."""
+    """Ingest article using synthetic-data-kit and return the full text, using cache if available."""
+    # Check if already ingested
+    filename = url.replace('https://', '').replace('http://', '').replace('/', '_') + '.txt'
+    cache_dir = os.path.join(CACHE_DIR, "full_text")
+    filepath = os.path.join(cache_dir, filename)
+    if os.path.exists(filepath):
+        print(f"Loading from cache: {filepath}")
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return f.read()
+    
+    # Ingest if not cached
     try:
         cmd = INGEST_COMMAND + [url]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
@@ -101,6 +133,11 @@ def ingest_article(url):
                 # Read the full text from the file
                 with open(output_path, 'r', encoding='utf-8') as f:
                     full_text = f.read()
+                # Save to cache
+                os.makedirs(cache_dir, exist_ok=True)
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(full_text)
+                print(f"Saved to cache: {filepath}")
                 return full_text
             else:
                 print(f"Could not find output path in output: {result.stdout}")
@@ -152,7 +189,8 @@ def send_to_openrouter(feeds):
 
     articles_list = "\n".join([f"{feed['id']}. Title: {feed.get('title', '')}\n   Description: {feed.get('description', '')}\n   URL: {feed.get('url', '')}" for feed in feeds_sorted])
 
-    prompt1 = f"Here is a list of articles:\n{articles_list}\n\nWhich ones are most relevant in answering this prompt: 'Historically, how has news like this impacted the stock market? Which Stocks will this impact the most? Give a score 1(min) - 10(max) on how likely there will be impact.'? If none are relevant, say 'abort' or 'no relevant news'. If you want full text for some, say 'yes' and provide the article IDs in order of relevance like 1, 2, 3."
+    prompt1 = f" In list of articles that follow - Which ones are most relevant in answering this question: 'Historically, how has news like this impacted the stock market, especially any individual stock?\
+          If these do not usually impact US Stock market, say 'abort' or 'no relevant news'. If you want full text for some, say 'yes' and provide the article IDs in order of relevance like 1, 2, 3., in follow up question you will get these to help answer better. Here is a list of articles:\n{articles_list}\n\n"
 
     payload1 = {
         "model": "tngtech/deepseek-r1t2-chimera:free",
@@ -162,11 +200,26 @@ def send_to_openrouter(feeds):
     }
 
     try:
+        print("Sending first request to OpenRouter...")
+        # Save payload1 to file
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(os.path.join(DATA_DIR, f"openrouter_request1_{int(time.time())}.json"), 'w') as f:
+            json.dump(payload1, f, indent=2)
+        print("Payload1:", json.dumps(payload1, indent=2))
         response1 = requests.post(OPENROUTER_API_URL, headers=headers, json=payload1)
+        print("Response1 Status Code:", response1.status_code)
+        print("Response1 Headers:", dict(response1.headers))
+        print("Response1 Text:", response1.text)
+        # Save response1 to file
+        with open(os.path.join(DATA_DIR, f"openrouter_response1_{int(time.time())}.json"), 'w') as f:
+            json.dump({"status_code": response1.status_code, "headers": dict(response1.headers), "text": response1.text}, f, indent=2)
         response1.raise_for_status()
         result1 = response1.json()
         response_text = result1['choices'][0]['message']['content']
         print("First OpenRouter Response:", response_text)
+        # Save response_text to file
+        with open(os.path.join(DATA_DIR, f"openrouter_response1_text_{int(time.time())}.txt"), 'w') as f:
+            f.write(response_text)
 
         # Parse response for abort or no relevant
         if 'abort' in response_text.lower() or 'no relevant' in response_text.lower():
@@ -204,7 +257,18 @@ def send_to_openrouter(feeds):
                     ]
                 }
 
+                print("Sending second request to OpenRouter (with full text)...")
+                # Save payload2 to file
+                with open(os.path.join(DATA_DIR, f"openrouter_request2_{int(time.time())}.json"), 'w') as f:
+                    json.dump(payload2, f, indent=2)
+                print("Payload2:", json.dumps(payload2, indent=2))
                 response2 = requests.post(OPENROUTER_API_URL, headers=headers, json=payload2)
+                print("Response2 Status Code:", response2.status_code)
+                print("Response2 Headers:", dict(response2.headers))
+                print("Response2 Text:", response2.text)
+                # Save response2 to file
+                with open(os.path.join(DATA_DIR, f"openrouter_response2_{int(time.time())}.json"), 'w') as f:
+                    json.dump({"status_code": response2.status_code, "headers": dict(response2.headers), "text": response2.text}, f, indent=2)
                 response2.raise_for_status()
                 result2 = response2.json()
                 analysis = result2['choices'][0]['message']['content']
@@ -230,7 +294,18 @@ def send_to_openrouter(feeds):
                 ]
             }
 
+            print("Sending second request to OpenRouter (with descriptions)...")
+            # Save payload2 to file
+            with open(os.path.join(DATA_DIR, f"openrouter_request2_{int(time.time())}.json"), 'w') as f:
+                json.dump(payload2, f, indent=2)
+            print("Payload2:", json.dumps(payload2, indent=2))
             response2 = requests.post(OPENROUTER_API_URL, headers=headers, json=payload2)
+            print("Response2 Status Code:", response2.status_code)
+            print("Response2 Headers:", dict(response2.headers))
+            print("Response2 Text:", response2.text)
+            # Save response2 to file
+            with open(os.path.join(DATA_DIR, f"openrouter_response2_{int(time.time())}.json"), 'w') as f:
+                json.dump({"status_code": response2.status_code, "headers": dict(response2.headers), "text": response2.text}, f, indent=2)
             response2.raise_for_status()
             result2 = response2.json()
             analysis = result2['choices'][0]['message']['content']
@@ -243,12 +318,24 @@ def send_to_openrouter(feeds):
             print(f"Saved analysis to {analysis_file}")
     except requests.RequestException as e:
         print(f"Error sending to OpenRouter: {e}")
+        error_details = {"error": str(e)}
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Error Response Status Code: {e.response.status_code}")
+            print(f"Error Response Headers: {dict(e.response.headers)}")
+            print(f"Error Response Text: {e.response.text}")
+            error_details["status_code"] = e.response.status_code
+            error_details["headers"] = dict(e.response.headers)
+            error_details["text"] = e.response.text
+        # Save error to file
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(os.path.join(DATA_DIR, f"openrouter_error_{int(time.time())}.json"), 'w') as f:
+            json.dump(error_details, f, indent=2)
 
 async def main():
     """Main loop to run every minute."""
     while True:
         print(f"Querying GDELT at {datetime.now()}")
-        articles = await query_gdelt()
+        articles = await query_gdelt(last_minutes=15)  # Fetch last 15 minutes
 
         if articles:
             print(f"Found {len(articles)} relevant articles.")
@@ -258,10 +345,17 @@ async def main():
                 if url:
                     full_text = ingest_article(url)
                     if full_text:
-                        save_text_locally(url, full_text)
                         # Update article with full_text for feeds
                         article['full_text'] = full_text
-                        feeds.append(article)
+                    # Prepare feed with title and quotes combined
+                    feed = {
+                        'title': article.get('title', ''),
+                        'description': article.get('description', ''),
+                        'url': url,
+                        'seendate': article.get('seendate', ''),
+                        'full_text': full_text if full_text else ''
+                    }
+                    feeds.append(feed)
             # Send to OpenRouter
             send_to_openrouter(feeds)
         else:

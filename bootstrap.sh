@@ -3,8 +3,10 @@
 # Set DATA_DIR
 export DATA_DIR="/usr/home/opc/gdelt_data"
 
-# Create directory
+# Create directories
 mkdir -p "$DATA_DIR"
+mkdir -p "$DATA_DIR/cache"
+mkdir -p "$DATA_DIR/cache/full_text"
 
 # Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
