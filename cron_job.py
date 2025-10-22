@@ -109,41 +109,65 @@ def process_analysis(analysis_text, timestamp):
         print(f"Error processing analysis: {e}")
 
 def main():
-    """Main cron job function"""
-    print(f"Running cron job at {datetime.now()}")
+    """Main cron job function - runs continuously"""
+    print(f"Starting cron job service at {datetime.now()}")
 
-    # Get latest analysis files
-    analysis_files = glob.glob(os.path.join(DATA_DIR, "analysis_*.txt"))
-    analysis_files.sort(reverse=True)
-
-    if not analysis_files:
-        print("No analysis files found")
-        return
-
-    # Process each analysis file
-    for file_path in analysis_files[:10]:  # Process last 10 files
-        filename = os.path.basename(file_path)
-        timestamp_str = filename.replace('analysis_', '').replace('.txt', '')
-
+    while True:
         try:
-            timestamp = datetime.fromtimestamp(int(timestamp_str)).strftime('%Y-%m-%d %H:%M:%S')
-        except:
-            timestamp = filename
+            print(f"Running cron job cycle at {datetime.now()}")
 
-        # Check if already processed (you could add a processed file list)
-        processed_file = os.path.join(DATA_DIR, f"processed_{filename}")
-        if os.path.exists(processed_file):
-            continue
+            # Get latest analysis files
+            analysis_files = glob.glob(os.path.join(DATA_DIR, "analysis_*.txt"))
+            analysis_files.sort(reverse=True)
 
-        # Read and process analysis
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+            if not analysis_files:
+                print("No analysis files found, waiting...")
+            else:
+                # Process each analysis file that hasn't been processed yet
+                processed_count = 0
+                for file_path in analysis_files:
+                    filename = os.path.basename(file_path)
+                    timestamp_str = filename.replace('analysis_', '').replace('.txt', '')
 
-        process_analysis(content, timestamp)
+                    try:
+                        timestamp = datetime.fromtimestamp(int(timestamp_str)).strftime('%Y-%m-%d %H:%M:%S')
+                    except:
+                        timestamp = filename
 
-        # Mark as processed
-        with open(processed_file, 'w') as f:
-            f.write(str(time.time()))
+                    # Check if already processed
+                    processed_file = os.path.join(DATA_DIR, f"processed_{filename}")
+                    if os.path.exists(processed_file):
+                        continue
+
+                    # Read and process analysis
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+
+                        process_analysis(content, timestamp)
+                        processed_count += 1
+
+                        # Mark as processed
+                        with open(processed_file, 'w') as f:
+                            f.write(str(time.time()))
+
+                    except Exception as e:
+                        print(f"Error processing file {filename}: {e}")
+                        continue
+
+                print(f"Processed {processed_count} new analysis files in this cycle")
+
+            # Wait for 1 hour before next cycle
+            print(f"Sleeping for 1 hour before next cycle...")
+            time.sleep(3600)  # 1 hour in seconds
+
+        except KeyboardInterrupt:
+            print(f"\nStopping cron job service at {datetime.now()}")
+            break
+        except Exception as e:
+            print(f"Error in cron job cycle: {e}")
+            print("Retrying in 5 minutes...")
+            time.sleep(300)  # 5 minutes on error
 
 if __name__ == "__main__":
     main()
