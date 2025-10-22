@@ -49,7 +49,7 @@ def index():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>GDELT Analysis Dashboard</title>
+        <title>Equity Analysis Dashboard</title>
         <style>
             body { font-family: Arial, sans-serif; margin: 20px; }
             h1 { color: #333; }
