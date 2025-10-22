@@ -10,6 +10,10 @@ import io
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, Dict, Optional, List
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Configuration
 BASE = "http://data.gdeltproject.org/gdeltv3/gqg/{stamp}.gqg.json.gz"
@@ -162,11 +166,10 @@ def get_openrouter_key():
     """Get OpenRouter API key from environment."""
     return os.getenv('openrouterKey')
 
-def send_alert_email(ticker, company, reason):
-    """Send alert email for high impact stock"""
+def send_alert_email(receiver_email, analysis_content, timestamp):
+    """Send alert email with analysis"""
     sender_email = "universalcachetune@gmail.com"
     sender_password = os.environ.get('senderPassword')
-    receiver_email = "shaginhekvs@gmail.com"
 
     if not sender_password:
         print("Sender password not set.")
@@ -175,18 +178,19 @@ def send_alert_email(ticker, company, reason):
     msg = MIMEMultipart()
     msg['From'] = sender_email
     msg['To'] = receiver_email
-    msg['Subject'] = f"High Impact Alert: {ticker} - {company}"
+    msg['Subject'] = f"High Impact Stock Alert - {timestamp}"
 
     body = f"""
-High Impact Stock Alert:
+High Impact Stock Alert
 
-Ticker: {ticker}
-Company: {company}
-Likelihood: 10/10
+Timestamp: {timestamp}
 
-Reason: {reason}
+Analysis:
+{analysis_content}
 
 This alert was generated based on recent news analysis.
+---
+To unsubscribe or modify your settings, please contact the administrator.
 """
 
     msg.attach(MIMEText(body, 'plain'))
@@ -196,10 +200,10 @@ This alert was generated based on recent news analysis.
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, receiver_email, msg.as_string())
-        print(f"Alert email sent for {ticker}")
+        print(f"Alert email sent to {receiver_email}")
         return True
     except Exception as e:
-        print(f"Failed to send alert email: {e}")
+        print(f"Failed to send alert email to {receiver_email}: {e}")
         return False
 
 def get_alerted_stocks():
@@ -234,29 +238,64 @@ def clean_old_alerts():
     with open(alert_file, 'w') as f:
         json.dump(alerted, f)
 
-def process_analysis(analysis_text, timestamp):
-    """Parse analysis JSON and send alerts based on subscriber thresholds"""
+def get_last_email_time():
+    """Get timestamp of last email sent"""
+    email_file = os.path.join(DATA_DIR, "last_email.json")
+    if not os.path.exists(email_file):
+        return 0
     try:
-        analysis_data = json.loads(analysis_text)
-        potential_impacts = analysis_data.get('potential_impacts', [])
+        with open(email_file, 'r') as f:
+            data = json.load(f)
+            return data.get('last_sent', 0)
+    except:
+        return 0
+
+def update_last_email_time():
+    """Update timestamp of last email sent"""
+    email_file = os.path.join(DATA_DIR, "last_email.json")
+    with open(email_file, 'w') as f:
+        json.dump({'last_sent': time.time()}, f)
+
+def process_analysis(analysis_text, timestamp):
+    """Parse analysis JSON and send alerts for high impact stocks"""
+    try:
+        # Check if an hour has passed since last email
         current_time = time.time()
+        last_email_time = get_last_email_time()
+        if current_time - last_email_time < 3600:  # 1 hour in seconds
+            print("Less than 1 hour since last email, skipping alert")
+            return
 
-        subscribers = get_subscribers()
-        for sub in subscribers:
-            # Check if enough time has passed since last send
-            time_since_last = current_time - sub['last_sent']
-            if time_since_last < sub['frequency'] * 3600:
-                continue
+        # Try to extract JSON from the text (in case there's extra text around it)
+        json_start = analysis_text.find('{')
+        json_end = analysis_text.rfind('}') + 1
 
-            # Check if any impact meets threshold
-            for impact in potential_impacts:
-                if impact.get('likelihood', 0) >= sub['threshold']:
-                    if send_alert_email(sub['email'], analysis_text, timestamp):
-                        update_last_sent(sub['email'], current_time)
-                    break
+        if json_start != -1 and json_end > json_start:
+            json_text = analysis_text[json_start:json_end]
+            analysis_data = json.loads(json_text)
+        else:
+            analysis_data = json.loads(analysis_text)
 
-    except json.JSONDecodeError:
-        print("Failed to parse analysis as JSON")
+        potential_impacts = analysis_data.get('potential_impacts', [])
+
+        # Check if any impact has high likelihood (>=8)
+        for impact in potential_impacts:
+            if impact.get('likelihood', 0) >= 8:
+                ticker = impact.get('ticker')
+                company = impact.get('company')
+                likelihood = impact.get('likelihood')
+                reason = impact.get('reason')
+
+                if send_alert_email("shaginhekvs@gmail.com", analysis_text, timestamp):
+                    update_last_email_time()
+                    print(f"High impact alert sent for {ticker} ({company}) with likelihood {likelihood}")
+                break
+
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse analysis as JSON: {e}")
+        print(f"Analysis text: {analysis_text[:200]}...")
+    except Exception as e:
+        print(f"Error processing analysis: {e}")
 
 def update_last_sent(email, timestamp):
     """Update last sent timestamp for subscriber"""

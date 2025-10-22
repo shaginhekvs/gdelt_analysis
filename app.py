@@ -2,6 +2,7 @@ from flask import Flask, render_template_string, request, redirect
 import os
 import glob
 import json
+import gzip
 from datetime import datetime
 
 app = Flask(__name__)
@@ -25,17 +26,24 @@ def index():
         filename = os.path.basename(file)
         top_analyses.append({'timestamp': timestamp, 'content': content[:500] + '...' if len(content) > 500 else content, 'filename': filename})
 
-    # Get txt files
-    txt_files = glob.glob(os.path.join(DATA_DIR, "*.txt"))
-    txt_files = [f for f in txt_files if not os.path.basename(f).startswith('analysis_')]  # Exclude analysis files
-    txt_files.sort(reverse=True)  # Most recent first
-    last_txts = []
-    for file in txt_files[:5]:  # Last 5
-        with open(file, 'r', encoding='utf-8') as f:
-            content = f.read()
-        title = os.path.basename(file).replace('.txt', '')
+    # Get GDELT cache files
+    CACHE_DIR = os.path.join(DATA_DIR, "cache")
+    cache_files = glob.glob(os.path.join(CACHE_DIR, "*.gqg.json.gz"))
+    cache_files.sort(reverse=True)  # Most recent first
+    last_gdelt = []
+    for file in cache_files[:5]:  # Last 5
+        try:
+            with gzip.open(file, 'rt', encoding='utf-8') as f:
+                content = f.read()
+                # Parse JSON and extract first few articles for preview
+                articles = [json.loads(line) for line in content.strip().split('\n') if line.strip()]
+                preview = json.dumps(articles[:2], indent=2)  # Show first 2 articles
+        except Exception as e:
+            preview = f"Error reading file: {e}"
+
+        title = os.path.basename(file).replace('.gqg.json.gz', '')
         filename = os.path.basename(file)
-        last_txts.append({'title': title, 'content': content[:100], 'filename': filename})
+        last_gdelt.append({'title': title, 'content': preview[:200] + '...' if len(preview) > 200 else preview, 'filename': filename})
 
     html = """
     <!DOCTYPE html>
@@ -55,25 +63,9 @@ def index():
     </head>
     <body>
         <h1>GDELT Analysis Dashboard</h1>
-        <h2>Top OpenRouter Responses</h2>
-        {% for analysis in top_analyses %}
-        <div class="analysis">
-            <strong>{{ analysis.timestamp }}</strong>
-            <a href="/analysis/{{ analysis.filename }}" class="link">View Full</a><br>
-            {{ analysis.content }}
-        </div>
-        {% endfor %}
-        <h2>Last Few Titles and Data (up to 100 chars)</h2>
-        {% for txt in last_txts %}
-        <div class="txt">
-            <strong>{{ txt.title }}</strong>
-            <a href="/txt/{{ txt.filename }}" class="link">View Full</a><br>
-            {{ txt.content }}
-        </div>
-        {% endfor %}
 
         <h2>Subscribe to Alerts</h2>
-        <form action="/subscribe" method="post">
+        <form action="/subscribe" method="post" style="margin-bottom: 30px;">
             <label for="email">Email:</label><br>
             <input type="email" id="email" name="email" required><br><br>
 
@@ -90,10 +82,34 @@ def index():
 
             <input type="submit" value="Subscribe">
         </form>
+
+        <h2>Unsubscribe from Alerts</h2>
+        <form action="/unsubscribe" method="post">
+            <label for="unsubscribe_email">Email:</label><br>
+            <input type="email" id="unsubscribe_email" name="email" required><br><br>
+            <input type="submit" value="Unsubscribe">
+        </form>
+
+        <h2>Top OpenRouter Responses</h2>
+        {% for analysis in top_analyses %}
+        <div class="analysis">
+            <strong>{{ analysis.timestamp }}</strong>
+            <a href="/analysis/{{ analysis.filename }}" class="link">View Full</a><br>
+            {{ analysis.content }}
+        </div>
+        {% endfor %}
+        <h2>Latest GDELT Data (Preview)</h2>
+        {% for gdelt in last_gdelt %}
+        <div class="txt">
+            <strong>{{ gdelt.title }}</strong>
+            <a href="/gdelt/{{ gdelt.filename }}" class="link">View Full</a><br>
+            {{ gdelt.content }}
+        </div>
+        {% endfor %}
     </body>
     </html>
     """
-    return render_template_string(html, top_analyses=top_analyses, last_txts=last_txts)
+    return render_template_string(html, top_analyses=top_analyses, last_gdelt=last_gdelt)
 
 @app.route('/analysis/<filename>')
 def view_analysis(filename):
@@ -166,6 +182,48 @@ def view_txt(filename):
     """
     return render_template_string(html, title=title, content=content)
 
+@app.route('/gdelt/<filename>')
+def view_gdelt(filename):
+    CACHE_DIR = os.path.join(DATA_DIR, "cache")
+    file_path = os.path.join(CACHE_DIR, filename)
+    if not os.path.exists(file_path):
+        return "File not found", 404
+
+    try:
+        with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+            content = f.read()
+            # Parse all articles from the GDELT file
+            articles = [json.loads(line) for line in content.strip().split('\n') if line.strip()]
+            formatted_content = json.dumps(articles, indent=2)
+    except Exception as e:
+        formatted_content = f"Error reading file: {e}"
+
+    title = filename.replace('.gqg.json.gz', '')
+
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Full GDELT Data - {{ title }}</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { color: #333; }
+            .content { background: #e4f4f4; padding: 20px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; }
+            .back { color: #007bff; text-decoration: none; }
+            .back:hover { text-decoration: underline; }
+            .article { border: 1px solid #ccc; margin: 10px 0; padding: 10px; border-radius: 5px; }
+        </style>
+    </head>
+    <body>
+        <h1>GDELT Data - {{ title }}</h1>
+        <p><strong>Articles:</strong> {{ articles|length }}</p>
+        <p><a href="/" class="back">← Back to Dashboard</a></p>
+        <div class="content">{{ formatted_content }}</div>
+    </body>
+    </html>
+    """
+    return render_template_string(html, title=title, formatted_content=formatted_content, articles=articles)
+
 def get_subscribers():
     """Get list of subscribers"""
     sub_file = os.path.join(DATA_DIR, "subscribers.json")
@@ -190,6 +248,18 @@ def save_subscriber(email, threshold, frequency):
     with open(sub_file, 'w') as f:
         json.dump(subscribers, f, indent=2)
 
+def remove_subscriber(email):
+    """Remove subscriber from list"""
+    sub_file = os.path.join(DATA_DIR, "subscribers.json")
+    subscribers = get_subscribers()
+    original_count = len(subscribers)
+    subscribers = [sub for sub in subscribers if sub['email'].lower() != email.lower()]
+    if len(subscribers) < original_count:
+        with open(sub_file, 'w') as f:
+            json.dump(subscribers, f, indent=2)
+        return True
+    return False
+
 @app.route('/subscribe', methods=['POST'])
 def subscribe():
     email = request.form.get('email')
@@ -201,6 +271,18 @@ def subscribe():
 
     save_subscriber(email, threshold, frequency)
     return "Subscription successful! You'll receive alerts based on your settings."
+
+@app.route('/unsubscribe', methods=['POST'])
+def unsubscribe():
+    email = request.form.get('email')
+
+    if not email:
+        return "Missing email field", 400
+
+    if remove_subscriber(email):
+        return "Successfully unsubscribed from alerts."
+    else:
+        return "Email not found in subscription list or already unsubscribed."
 
 if __name__ == "__main__":
     app.run(debug=False, host='0.0.0.0', port=7001)

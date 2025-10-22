@@ -75,7 +75,16 @@ To unsubscribe or modify your settings, please contact the administrator.
 def process_analysis(analysis_text, timestamp):
     """Parse analysis JSON and send alerts to eligible subscribers"""
     try:
-        analysis_data = json.loads(analysis_text)
+        # Try to extract JSON from the text (in case there's extra text around it)
+        json_start = analysis_text.find('{')
+        json_end = analysis_text.rfind('}') + 1
+
+        if json_start != -1 and json_end > json_start:
+            json_text = analysis_text[json_start:json_end]
+            analysis_data = json.loads(json_text)
+        else:
+            analysis_data = json.loads(analysis_text)
+
         potential_impacts = analysis_data.get('potential_impacts', [])
         current_time = time.time()
 
@@ -93,8 +102,11 @@ def process_analysis(analysis_text, timestamp):
                         update_last_sent(sub['email'], current_time)
                     break
 
-    except json.JSONDecodeError:
-        print("Failed to parse analysis as JSON")
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse analysis as JSON: {e}")
+        print(f"Analysis text: {analysis_text[:200]}...")
+    except Exception as e:
+        print(f"Error processing analysis: {e}")
 
 def main():
     """Main cron job function"""
