@@ -211,17 +211,30 @@ def main():
 
                 for subscriber in subscribers:
                     try:
-                        # Collect all relevant impacts since their last email
-                        relevant_impacts = collect_alert_impacts(subscriber, analysis_files)
+                        # Check if enough time has passed since last email based on frequency setting
+                        last_sent_time = subscriber.get('last_sent', 0)
+                        frequency_seconds = subscriber['frequency'] * 3600  # Convert hours to seconds
+                        time_since_last = current_time - last_sent_time
 
-                        if relevant_impacts:
-                            # Send consolidated alert
-                            if send_consolidated_alert(subscriber, relevant_impacts, latest_timestamp):
-                                # Update last sent time
-                                update_last_sent(subscriber['email'], current_time)
-                                print(f"Updated last sent time for {subscriber['email']}")
+                        # Only send alerts if frequency period has passed
+                        if time_since_last >= frequency_seconds:
+                            # Collect all relevant impacts since their last email
+                            relevant_impacts = collect_alert_impacts(subscriber, analysis_files)
+
+                            if relevant_impacts:
+                                # Send consolidated alert
+                                if send_consolidated_alert(subscriber, relevant_impacts, latest_timestamp):
+                                    # Update last sent time
+                                    update_last_sent(subscriber['email'], current_time)
+                                    print(f"Sent scheduled alert to {subscriber['email']} (frequency: every {subscriber['frequency']} hours)")
+                                else:
+                                    print(f"Failed to send alert to {subscriber['email']}")
+                            else:
+                                print(f"No new alerts for {subscriber['email']} (threshold: {subscriber['threshold']}, frequency: every {subscriber['frequency']} hours)")
                         else:
-                            print(f"No new alerts for {subscriber['email']} (threshold: {subscriber['threshold']})")
+                            # Calculate when next email will be sent
+                            time_until_next = frequency_seconds - time_since_last
+                            print(f"Next scheduled email for {subscriber['email']} in {time_until_next/3600:.1f} hours")
 
                     except Exception as e:
                         print(f"Error processing subscriber {subscriber['email']}: {e}")
