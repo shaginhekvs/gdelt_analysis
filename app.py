@@ -5,7 +5,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-DATA_DIR = os.getenv("DATA_DIR")
+DATA_DIR = os.getenv("DATA_DIR", "data_saved")
 
 @app.route('/')
 def index():
@@ -25,7 +25,7 @@ def index():
 
     # Get txt files
     txt_files = glob.glob(os.path.join(DATA_DIR, "*.txt"))
-    txt_files = [f for f in txt_files if not f.endswith('analysis_*.txt')]  # Exclude analysis files
+    txt_files = [f for f in txt_files if not os.path.basename(f).startswith('analysis_')]  # Exclude analysis files
     txt_files.sort(reverse=True)  # Most recent first
     last_txts = []
     for file in txt_files[:5]:  # Last 5
