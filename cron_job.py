@@ -32,8 +32,8 @@ def update_last_sent(email, timestamp):
     with open(sub_file, 'w') as f:
         json.dump(subscribers, f, indent=2)
 
-def send_alert_email(receiver_email, analysis_content, timestamp):
-    """Send alert email with analysis"""
+def send_alert_email(receiver_email, formatted_content, timestamp):
+    """Send alert email with formatted content"""
     sender_email = "universalcachetune@gmail.com"
     sender_password = os.environ.get('senderPassword')
 
@@ -46,20 +46,7 @@ def send_alert_email(receiver_email, analysis_content, timestamp):
     msg['To'] = receiver_email
     msg['Subject'] = f"High Impact Stock Alert - {timestamp}"
 
-    body = f"""
-High Impact Stock Alert
-
-Timestamp: {timestamp}
-
-Analysis:
-{analysis_content}
-
-This alert was generated based on recent news analysis.
----
-To unsubscribe or modify your settings, please contact the administrator.
-"""
-
-    msg.attach(MIMEText(body, 'plain'))
+    msg.attach(MIMEText(formatted_content, 'plain'))
 
     try:
         context = ssl.create_default_context()
@@ -72,102 +59,185 @@ To unsubscribe or modify your settings, please contact the administrator.
         print(f"Failed to send alert email to {receiver_email}: {e}")
         return False
 
-def process_analysis(analysis_text, timestamp):
-    """Parse analysis JSON and send alerts to eligible subscribers"""
-    try:
-        # Try to extract JSON from the text (in case there's extra text around it)
-        json_start = analysis_text.find('{')
-        json_end = analysis_text.rfind('}') + 1
+def deduplicate_impacts(impacts):
+    """Remove duplicate impacts based on ticker and likelihood score"""
+    seen = set()
+    unique_impacts = []
+    for impact in impacts:
+        key = (impact.get('ticker', 'Unknown'), impact.get('likelihood', 0))
+        if key not in seen:
+            seen.add(key)
+            unique_impacts.append(impact)
+    return unique_impacts
 
-        if json_start != -1 and json_end > json_start:
-            json_text = analysis_text[json_start:json_end]
-            analysis_data = json.loads(json_text)
-        else:
-            analysis_data = json.loads(analysis_text)
+def collect_alert_impacts(subscriber, analysis_files):
+    """Collect all relevant impacts since subscriber's last email"""
+    relevant_impacts = []
+    last_sent_time = subscriber.get('last_sent', 0)
+    current_time = time.time()
 
-        potential_impacts = analysis_data.get('potential_impacts', [])
-        current_time = time.time()
+    for file_path in analysis_files:
+        filename = os.path.basename(file_path)
+        timestamp_str = filename.replace('analysis_', '').replace('.txt', '')
 
-        subscribers = get_subscribers()
-        for sub in subscribers:
-            # Check if enough time has passed since last send
-            time_since_last = current_time - sub['last_sent']
-            if time_since_last < sub['frequency'] * 3600:
+        try:
+            file_timestamp = int(timestamp_str)
+        except:
+            continue
+
+        # If last_sent is 0 (never sent), include all files. Otherwise, only files newer than last_sent.
+        if last_sent_time == 0 or file_timestamp > last_sent_time:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                # Extract JSON
+                json_start = content.find('{')
+                json_end = content.rfind('}') + 1
+
+                if json_start != -1 and json_end > json_start:
+                    json_text = content[json_start:json_end]
+                    analysis_data = json.loads(json_text)
+                else:
+                    analysis_data = json.loads(content)
+
+                potential_impacts = analysis_data.get('potential_impacts', [])
+                summary = analysis_data.get('summary', 'No summary available')
+
+                # Filter impacts that meet subscriber's threshold
+                for impact in potential_impacts:
+                    likelihood = impact.get('likelihood', 0)
+                    ticker = impact.get('ticker', 'Unknown')
+
+                    if likelihood >= subscriber['threshold']:
+                        # Add file timestamp and summary context
+                        impact_copy = impact.copy()
+                        impact_copy['_file_timestamp'] = file_timestamp
+                        impact_copy['_summary'] = summary
+                        relevant_impacts.append(impact_copy)
+
+            except Exception as e:
+                print(f"Error processing file {filename} for {subscriber['email']}: {e}")
                 continue
 
-            # Check if any impact meets threshold
-            for impact in potential_impacts:
-                if impact.get('likelihood', 0) >= sub['threshold']:
-                    if send_alert_email(sub['email'], analysis_text, timestamp):
-                        update_last_sent(sub['email'], current_time)
-                    break
+    return relevant_impacts
 
-    except json.JSONDecodeError as e:
-        print(f"Failed to parse analysis as JSON: {e}")
-        print(f"Analysis text: {analysis_text[:200]}...")
-    except Exception as e:
-        print(f"Error processing analysis: {e}")
+def send_consolidated_alert(subscriber, relevant_impacts, latest_timestamp):
+    """Send consolidated alert with all accumulated impacts"""
+    if not relevant_impacts:
+        return False
+
+    # Remove duplicate impacts
+    relevant_impacts = deduplicate_impacts(relevant_impacts)
+
+    # Group impacts by time periods for better organization
+    impact_groups = {}
+    for impact in relevant_impacts:
+        file_time = impact.pop('_file_timestamp', 0)
+        summary = impact.pop('_summary', 'General analysis')
+
+        time_key = f"{datetime.fromtimestamp(file_time).strftime('%Y-%m-%d %H:%M')} - {summary}"
+
+        if time_key not in impact_groups:
+            impact_groups[time_key] = []
+        impact_groups[time_key].append(impact)
+
+    # Format the consolidated email
+    alert_content = format_consolidated_email(impact_groups, latest_timestamp, subscriber['threshold'])
+
+    if send_alert_email(subscriber['email'], alert_content, latest_timestamp):
+        print(f"Sent consolidated alert to {subscriber['email']} with {len(relevant_impacts)} total impacts")
+        return True
+    return False
+
+def format_consolidated_email(impact_groups, latest_timestamp, threshold):
+    """Format consolidated alert email with grouped impacts"""
+
+    body = f"""High Impact Stock Alert Summary
+{latest_timestamp}
+(Threshold: {threshold}/10 or higher)
+
+This email contains all stock alerts that met your threshold since your last notification:
+
+"""
+
+    total_impacts = sum(len(impacts) for impacts in impact_groups.values())
+
+    for time_summary, impacts in impact_groups.items():
+        body += f"""✨ {time_summary}
+({len(impacts)} alert{'s' if len(impacts) > 1 else ''})
+
+"""
+        for impact in impacts:
+            ticker = impact.get('ticker', 'Unknown')
+            company = impact.get('company', 'Unknown Company')
+            likelihood = impact.get('likelihood', 0)
+            reason = impact.get('reason', 'No reason provided')
+
+            body += f"""   📈 {ticker} - {company}
+      Likelihood: {likelihood}/10
+      💡 {reason}
+
+"""
+
+    body += f"""
+Total alerts in this summary: {total_impacts}
+
+This alert was generated based on recent GDELT news analysis and stock impact predictions.
+---
+To unsubscribe or modify your settings, please visit the dashboard.
+"""
+
+    return body
 
 def main():
-    """Main cron job function - runs continuously"""
+    """Main cron job function - runs continuously every minute"""
     print(f"Starting cron job service at {datetime.now()}")
 
     while True:
         try:
             print(f"Running cron job cycle at {datetime.now()}")
 
-            # Get latest analysis files
+            # Get all analysis files (always scan all to check for new subscribers)
             analysis_files = glob.glob(os.path.join(DATA_DIR, "analysis_*.txt"))
-            analysis_files.sort(reverse=True)
-
             if not analysis_files:
                 print("No analysis files found, waiting...")
             else:
-                # Process each analysis file that hasn't been processed yet
-                processed_count = 0
-                for file_path in analysis_files:
-                    filename = os.path.basename(file_path)
-                    timestamp_str = filename.replace('analysis_', '').replace('.txt', '')
+                analysis_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)  # Sort by file modification time
 
+                subscribers = get_subscribers()
+                current_time = time.time()
+                latest_timestamp = datetime.fromtimestamp(current_time).strftime('%Y-%m-%d %H:%M:%S')
+
+                for subscriber in subscribers:
                     try:
-                        timestamp = datetime.fromtimestamp(int(timestamp_str)).strftime('%Y-%m-%d %H:%M:%S')
-                    except:
-                        timestamp = filename
+                        # Collect all relevant impacts since their last email
+                        relevant_impacts = collect_alert_impacts(subscriber, analysis_files)
 
-                    # Check if already processed
-                    processed_file = os.path.join(DATA_DIR, f"processed_{filename}")
-                    if os.path.exists(processed_file):
-                        continue
-
-                    # Read and process analysis
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-
-                        process_analysis(content, timestamp)
-                        processed_count += 1
-
-                        # Mark as processed
-                        with open(processed_file, 'w') as f:
-                            f.write(str(time.time()))
+                        if relevant_impacts:
+                            # Send consolidated alert
+                            if send_consolidated_alert(subscriber, relevant_impacts, latest_timestamp):
+                                # Update last sent time
+                                update_last_sent(subscriber['email'], current_time)
+                                print(f"Updated last sent time for {subscriber['email']}")
+                        else:
+                            print(f"No new alerts for {subscriber['email']} (threshold: {subscriber['threshold']})")
 
                     except Exception as e:
-                        print(f"Error processing file {filename}: {e}")
+                        print(f"Error processing subscriber {subscriber['email']}: {e}")
                         continue
 
-                print(f"Processed {processed_count} new analysis files in this cycle")
-
-            # Wait for 1 hour before next cycle
-            print(f"Sleeping for 1 hour before next cycle...")
-            time.sleep(3600)  # 1 hour in seconds
+            # Wait for 1 minute before next cycle
+            print("Sleeping for 1 minute before next cycle...")
+            time.sleep(60)  # 1 minute
 
         except KeyboardInterrupt:
             print(f"\nStopping cron job service at {datetime.now()}")
             break
         except Exception as e:
             print(f"Error in cron job cycle: {e}")
-            print("Retrying in 5 minutes...")
-            time.sleep(300)  # 5 minutes on error
+            print("Retrying in 30 seconds...")
+            time.sleep(30)  # 30 seconds on error
 
 if __name__ == "__main__":
     main()
