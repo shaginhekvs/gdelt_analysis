@@ -162,12 +162,105 @@ def get_openrouter_key():
     """Get OpenRouter API key from environment."""
     return os.getenv('openrouterKey')
 
+def send_alert_email(ticker, company, reason):
+    """Send alert email for high impact stock"""
+    sender_email = "universalcachetune@gmail.com"
+    sender_password = os.environ.get('senderPassword')
+    receiver_email = "shaginhekvs@gmail.com"
+
+    if not sender_password:
+        print("Sender password not set.")
+        return False
+
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    msg['Subject'] = f"High Impact Alert: {ticker} - {company}"
+
+    body = f"""
+High Impact Stock Alert:
+
+Ticker: {ticker}
+Company: {company}
+Likelihood: 10/10
+
+Reason: {reason}
+
+This alert was generated based on recent news analysis.
+"""
+
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, receiver_email, msg.as_string())
+        print(f"Alert email sent for {ticker}")
+        return True
+    except Exception as e:
+        print(f"Failed to send alert email: {e}")
+        return False
+
+def get_alerted_stocks():
+    """Get list of stocks alerted in last 12 hours"""
+    alert_file = os.path.join(DATA_DIR, "alerted_stocks.json")
+    if not os.path.exists(alert_file):
+        return {}
+    try:
+        with open(alert_file, 'r') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_alerted_stock(ticker):
+    """Save stock to alerted list with timestamp"""
+    alert_file = os.path.join(DATA_DIR, "alerted_stocks.json")
+    alerted = get_alerted_stocks()
+    alerted[ticker] = time.time()
+    with open(alert_file, 'w') as f:
+        json.dump(alerted, f)
+
+def clean_old_alerts():
+    """Remove alerts older than 12 hours"""
+    alert_file = os.path.join(DATA_DIR, "alerted_stocks.json")
+    if not os.path.exists(alert_file):
+        return
+    alerted = get_alerted_stocks()
+    current_time = time.time()
+    to_remove = [ticker for ticker, ts in alerted.items() if current_time - ts > 12 * 3600]
+    for ticker in to_remove:
+        del alerted[ticker]
+    with open(alert_file, 'w') as f:
+        json.dump(alerted, f)
+
+def process_analysis(analysis_text):
+    """Parse analysis JSON and send alerts for score 10"""
+    try:
+        analysis_data = json.loads(analysis_text)
+        potential_impacts = analysis_data.get('potential_impacts', [])
+        for impact in potential_impacts:
+            ticker = impact.get('ticker')
+            company = impact.get('company')
+            likelihood = impact.get('likelihood')
+            reason = impact.get('reason')
+            if likelihood == 10:
+                alerted = get_alerted_stocks()
+                if ticker not in alerted:
+                    if send_alert_email(ticker, company, reason):
+                        save_alerted_stock(ticker)
+    except json.JSONDecodeError:
+        print("Failed to parse analysis as JSON")
+
 def send_to_openrouter(feeds):
     """Send feeds to OpenRouter for analysis with two-step process."""
     openrouter_key = get_openrouter_key()
     if not openrouter_key:
         print("OpenRouter API key not found.")
         return
+
+    # Clean old alerts
+    clean_old_alerts()
 
     headers = {
         'Authorization': f'Bearer {openrouter_key}',
@@ -236,7 +329,7 @@ def send_to_openrouter(feeds):
 
                 # Build feeds_text incrementally to stay under 130K
                 max_length = 130000
-                prompt_base2 = "Historically, how has news like this impacted the stock market? Which Stocks will this impact the most? Give a score 1(min) - 10(max) on how likely there will be impact.\n\nRelevant Articles:\n"
+                prompt_base2 = "You are a financial impact analysis expert specializing in market reaction forecasting.\n\nTask:\nGiven a final list of recent news articles, identify all NASDAQ-listed stocks that could potentially experience price movement as a result of the news.\n\nFor each relevant company:\n1. Provide the **ticker symbol** and **company name**.\n2. Assign a **likelihood score (1–10)**:\n   - 1–3 → Low chance of moving the stock.\n   - 4–6 → Moderate chance of influencing the stock.\n   - 7–10 → High likelihood of significant market impact.\n3. Add a **brief justification (1–2 sentences)** based on the article content and historical market behavior.\n\nOutput format (JSON preferred):\n```json\n{\n  \"potential_impacts\": [\n    {\n      \"ticker\": \"AAPL\",\n      \"company\": \"Apple Inc.\",\n      \"likelihood\": 8,\n      \"reason\": \"Strong AI hardware partnership announcement could affect investor outlook on upcoming earnings.\"\n    },\n    {\n      \"ticker\": \"TSLA\",\n      \"company\": \"Tesla Inc.\",\n      \"likelihood\": 5,\n      \"reason\": \"Supply chain comments may raise moderate concern, but not major short-term risk.\"\n    }\n  ],\n  \"summary\": \"Two major tech firms may see significant trading volume shifts.\"\n}\n```\n\nRelevant Articles:\n"
                 feeds_text_parts = []
                 current_length = len(prompt_base2)
 
@@ -279,13 +372,15 @@ def send_to_openrouter(feeds):
                 with open(analysis_file, 'w', encoding='utf-8') as f:
                     f.write(analysis)
                 print(f"Saved analysis to {analysis_file}")
+                # Process analysis for alerts
+                process_analysis(analysis)
             else:
                 print("No valid IDs found in response.")
         else:
             print("No full text requested, using descriptions.")
             # Use descriptions for all
             feeds_text = "\n\n".join([f"Title: {feed.get('title', '')}\nDescription: {feed.get('description', '')}" for feed in feeds_sorted])
-            prompt2 = f"Historically, how has news like this impacted the stock market? Which Stocks will this impact the most? Give a score 1(min) - 10(max) on how likely there will be impact.\n\nArticles:\n{feeds_text}"
+            prompt2 = f"You are a financial impact analysis expert specializing in market reaction forecasting.\n\nTask:\nGiven a final list of recent news articles, identify all NASDAQ-listed stocks that could potentially experience price movement as a result of the news.\n\nFor each relevant company:\n1. Provide the **ticker symbol** and **company name**.\n2. Assign a **likelihood score (1–10)**:\n   - 1–3 → Low chance of moving the stock.\n   - 4–6 → Moderate chance of influencing the stock.\n   - 7–10 → High likelihood of significant market impact.\n3. Add a **brief justification (1–2 sentences)** based on the article content and historical market behavior.\n\nOutput format (JSON preferred):\n```json\n{{\n  \"potential_impacts\": [\n    {{\n      \"ticker\": \"AAPL\",\n      \"company\": \"Apple Inc.\",\n      \"likelihood\": 8,\n      \"reason\": \"Strong AI hardware partnership announcement could affect investor outlook on upcoming earnings.\"\n    }},\n    {{\n      \"ticker\": \"TSLA\",\n      \"company\": \"Tesla Inc.\",\n      \"likelihood\": 5,\n      \"reason\": \"Supply chain comments may raise moderate concern, but not major short-term risk.\"\n    }}\n  ],\n  \"summary\": \"Two major tech firms may see significant trading volume shifts.\"\n}}\n```\n\nArticles:\n{feeds_text}"
 
             payload2 = {
                 "model": "tngtech/deepseek-r1t2-chimera:free",
@@ -316,6 +411,8 @@ def send_to_openrouter(feeds):
             with open(analysis_file, 'w', encoding='utf-8') as f:
                 f.write(analysis)
             print(f"Saved analysis to {analysis_file}")
+            # Process analysis for alerts
+            process_analysis(analysis)
     except requests.RequestException as e:
         print(f"Error sending to OpenRouter: {e}")
         error_details = {"error": str(e)}
