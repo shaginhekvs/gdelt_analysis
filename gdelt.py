@@ -374,7 +374,27 @@ def send_to_openrouter(feeds):
             json.dump({"status_code": response1.status_code, "headers": dict(response1.headers), "text": response1.text}, f, indent=2)
         response1.raise_for_status()
         result1 = response1.json()
-        response_text = result1['choices'][0]['message']['content']
+
+        # Validate response structure
+        if not isinstance(result1, dict):
+            print("Invalid API response: not a dictionary")
+            return
+
+        if 'choices' not in result1 or not isinstance(result1['choices'], list) or len(result1['choices']) == 0:
+            print(f"Invalid API response structure: {result1.keys() if 'choices' not in result1 else 'no choices'}")
+            return
+
+        choice = result1['choices'][0]
+        if not isinstance(choice, dict) or 'message' not in choice:
+            print(f"Invalid choice structure in API response: {choice.keys() if isinstance(choice, dict) else type(choice)}")
+            return
+
+        message = choice['message']
+        if not isinstance(message, dict) or 'content' not in message:
+            print(f"Invalid message structure in API response: {message.keys() if isinstance(message, dict) else type(message)}")
+            return
+
+        response_text = message['content']
         print("First OpenRouter Response:", response_text)
         # Save response_text to file
         with open(os.path.join(DATA_DIR, f"openrouter_response1_text_{int(time.time())}.txt"), 'w') as f:
